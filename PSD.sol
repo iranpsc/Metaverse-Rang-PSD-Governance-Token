@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-// ===== کتابخانه‌های OpenZeppelin =====
+// ===== OpenZeppelin =====
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
@@ -10,10 +10,9 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 // ============================================================
-// 1️⃣ توکن اصلی PSD (با قابلیت سوزاندن و محدودیت عرضه)
 // ============================================================
 contract ParadiasToken is ERC20, ERC20Burnable, Ownable {
-    uint256 public constant MAX_SUPPLY = 200000 * 10 ** 18; // ۲۰۰,۰۰۰ توکن
+    uint256 public constant MAX_SUPPLY = 200000 * 10 ** 18; // 
 
     constructor(address initialOwner) 
         ERC20("Paradias Supply Chain", "PSD") 
@@ -22,15 +21,13 @@ contract ParadiasToken is ERC20, ERC20Burnable, Ownable {
         _mint(initialOwner, MAX_SUPPLY);
     }
 
-    // فقط مالک می‌تواند ضرب کند، اما هرگز از سقف عبور نمی‌کند
+  
     function mint(address to, uint256 amount) external onlyOwner {
         require(totalSupply() + amount <= MAX_SUPPLY, "Exceeds max supply");
         _mint(to, amount);
     }
 }
 
-// ============================================================
-// 2️⃣ وستینگ خطی (آزادسازی تدریجی) – با محاسبه به‌روز
 // ============================================================
 contract LinearVesting is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -65,7 +62,7 @@ contract LinearVesting is Ownable, ReentrancyGuard {
         IERC20(_token).transferFrom(msg.sender, address(this), _totalAmount);
     }
 
-    // مقدار قابل آزادسازی در لحظه جاری (خطی)
+
     function releasableAmount() public view returns (uint256) {
         if (block.timestamp < startTime) return 0;
         if (block.timestamp >= startTime + duration) {
@@ -76,7 +73,7 @@ contract LinearVesting is Ownable, ReentrancyGuard {
         return vested - releasedAmount;
     }
 
-    // آزادسازی (با محافظت در برابر حملات بازگشتی)
+  
     function release() external nonReentrant {
         uint256 amount = releasableAmount();
         require(amount > 0, "No tokens to release");
@@ -85,7 +82,7 @@ contract LinearVesting is Ownable, ReentrancyGuard {
         emit TokensReleased(beneficiary, amount);
     }
 
-    // نمایش وضعیت کامل وستینگ
+    
     function getVestingInfo() external view returns (
         uint256 total,
         uint256 released,
@@ -98,8 +95,7 @@ contract LinearVesting is Ownable, ReentrancyGuard {
 }
 
 // ============================================================
-// 3️⃣ خزانه (Treasury) با لیست سفید و برداشت امن
-// ============================================================
+
 contract Treasury is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -112,7 +108,7 @@ contract Treasury is Ownable, ReentrancyGuard {
 
     constructor(address _token) Ownable(msg.sender) {
         token = IERC20(_token);
-        whitelisted[msg.sender] = true; // مالک به‌طور پیش‌فرض در لیست سفید
+        whitelisted[msg.sender] = true; 
     }
 
     modifier onlyWhitelisted() {
@@ -145,8 +141,7 @@ contract Treasury is Ownable, ReentrancyGuard {
 }
 
 // ============================================================
-// 4️⃣ DAO ساده (رأی‌گیری با وزن توکن – هر آدرس یک رأی)
-// ============================================================
+
 contract SimpleDAO is Ownable {
     IERC20 public immutable token;
     uint256 public proposalCount;
@@ -182,7 +177,7 @@ contract SimpleDAO is Ownable {
         emit ProposalCreated(proposalCount, description);
     }
 
-    // هر آدرس فقط یک بار می‌تواند رأی دهد (وزن برابر)
+    
     function vote(uint256 proposalId, bool support) external {
         Proposal storage p = proposals[proposalId];
         require(block.timestamp >= p.startTime, "Voting not started");
@@ -221,8 +216,7 @@ contract SimpleDAO is Ownable {
 }
 
 // ============================================================
-// 5️⃣ ایردراپ با Merkle Tree (کم‌گس و امن)
-// ============================================================
+
 contract MerkleAirdrop is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -243,7 +237,7 @@ contract MerkleAirdrop is Ownable, ReentrancyGuard {
         emit MerkleRootUpdated(_newRoot);
     }
 
-    // ادعای ایردراپ – با اثبات Merkle
+    
     function claim(uint256 amount, bytes32[] calldata merkleProof) external nonReentrant {
         require(!hasClaimed[msg.sender], "Already claimed");
         require(merkleRoot != bytes32(0), "Merkle root not set");
@@ -256,7 +250,7 @@ contract MerkleAirdrop is Ownable, ReentrancyGuard {
         emit Claimed(msg.sender, amount);
     }
 
-    // بررسی اینکه آیا یک آدرس می‌تواند ادعا کند (بدون تغییر وضعیت)
+    
     function getClaimableAmount(address account, uint256 amount, bytes32[] calldata merkleProof) 
         external view returns (bool) 
     {
@@ -267,8 +261,7 @@ contract MerkleAirdrop is Ownable, ReentrancyGuard {
 }
 
 // ============================================================
-// 6️⃣ قرارداد یکپارچه‌ساز (Orchestrator) – استقرار همه ماژول‌ها
-// ============================================================
+
 contract ParadiasSupplyChain is Ownable {
     ParadiasToken public token;
     LinearVesting public vesting;
@@ -291,10 +284,10 @@ contract ParadiasSupplyChain is Ownable {
         uint256 votingPeriod,
         bytes32 airdropMerkleRoot
     ) Ownable(initialOwner) {
-        // ۱. توکن
+    
         token = new ParadiasToken(initialOwner);
 
-        // ۲. وستینگ – ۵۰٪ از عرضه
+        
         uint256 vestingAmount = (token.MAX_SUPPLY() * 50) / 100;
         token.approve(address(this), vestingAmount);
         vesting = new LinearVesting(
@@ -305,14 +298,14 @@ contract ParadiasSupplyChain is Ownable {
             vestingAmount
         );
 
-        // ۳. خزانه – ۳۰٪ از عرضه
+        
         uint256 treasuryAmount = (token.MAX_SUPPLY() * 30) / 100;
         token.transfer(address(this), treasuryAmount);
         treasury = new Treasury(address(token));
         token.approve(address(treasury), treasuryAmount);
         treasury.deposit(treasuryAmount);
 
-        // ۴. DAO – ۱۰٪ از عرضه (برای توزیع بین رأی‌دهندگان)
+      
         uint256 daoAmount = (token.MAX_SUPPLY() * 10) / 100;
         dao = new SimpleDAO(address(token), votingPeriod);
         token.transfer(address(dao), daoAmount);
@@ -331,7 +324,7 @@ contract ParadiasSupplyChain is Ownable {
         );
     }
 
-    // نمایش مانده همه ماژول‌ها
+    
     function getSystemInfo() external view returns (
         uint256 totalSupply,
         uint256 vestingBalance,
