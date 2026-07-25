@@ -1,0 +1,350 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+// ===== کتابخانه‌های OpenZeppelin =====
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+
+// ============================================================
+// 1️⃣ توکن اصلی PSD (با قابلیت سوزاندن و محدودیت عرضه)
+// ============================================================
+contract ParadiasToken is ERC20, ERC20Burnable, Ownable {
+    uint256 public constant MAX_SUPPLY = 200000 * 10 ** 18; // ۲۰۰,۰۰۰ توکن
+
+    constructor(address initialOwner) 
+        ERC20("Paradias Supply Chain", "PSD") 
+        Ownable(initialOwner) 
+    {
+        _mint(initialOwner, MAX_SUPPLY);
+    }
+
+    // فقط مالک می‌تواند ضرب کند، اما هرگز از سقف عبور نمی‌کند
+    function mint(address to, uint256 amount) external onlyOwner {
+        require(totalSupply() + amount <= MAX_SUPPLY, "Exceeds max supply");
+        _mint(to, amount);
+    }
+}
+
+// ============================================================
+// 2️⃣ وستینگ خطی (آزادسازی تدریجی) – با محاسبه به‌روز
+// ============================================================
+contract LinearVesting is Ownable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
+    IERC20 public immutable token;
+    address public immutable beneficiary;
+    uint256 public immutable startTime;
+    uint256 public immutable duration;
+    uint256 public immutable totalAmount;
+    uint256 public releasedAmount;
+
+    event TokensReleased(address indexed beneficiary, uint256 amount);
+
+    constructor(
+        address _token,
+        address _beneficiary,
+        uint256 _startTime,
+        uint256 _duration,
+        uint256 _totalAmount
+    ) Ownable(msg.sender) {
+        require(_token != address(0), "Invalid token");
+        require(_beneficiary != address(0), "Invalid beneficiary");
+        require(_duration > 0, "Duration must be > 0");
+        require(_totalAmount > 0, "Total amount must be > 0");
+
+        token = IERC20(_token);
+        beneficiary = _beneficiary;
+        startTime = _startTime;
+        duration = _duration;
+        totalAmount = _totalAmount;
+
+        IERC20(_token).transferFrom(msg.sender, address(this), _totalAmount);
+    }
+
+    // مقدار قابل آزادسازی در لحظه جاری (خطی)
+    function releasableAmount() public view returns (uint256) {
+        if (block.timestamp < startTime) return 0;
+        if (block.timestamp >= startTime + duration) {
+            return totalAmount - releasedAmount;
+        }
+        uint256 elapsed = block.timestamp - startTime;
+        uint256 vested = (totalAmount * elapsed) / duration;
+        return vested - releasedAmount;
+    }
+
+    // آزادسازی (با محافظت در برابر حملات بازگشتی)
+    function release() external nonReentrant {
+        uint256 amount = releasableAmount();
+        require(amount > 0, "No tokens to release");
+        releasedAmount += amount;
+        token.safeTransfer(beneficiary, amount);
+        emit TokensReleased(beneficiary, amount);
+    }
+
+    // نمایش وضعیت کامل وستینگ
+    function getVestingInfo() external view returns (
+        uint256 total,
+        uint256 released,
+        uint256 releasable,
+        uint256 start,
+        uint256 end
+    ) {
+        return (totalAmount, releasedAmount, releasableAmount(), startTime, startTime + duration);
+    }
+}
+
+// ============================================================
+// 3️⃣ خزانه (Treasury) با لیست سفید و برداشت امن
+// ============================================================
+contract Treasury is Ownable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
+    IERC20 public immutable token;
+    mapping(address => bool) public whitelisted;
+
+    event WhitelistUpdated(address indexed account, bool status);
+    event TokensWithdrawn(address indexed to, uint256 amount);
+    event TokensDeposited(address indexed from, uint256 amount);
+
+    constructor(address _token) Ownable(msg.sender) {
+        token = IERC20(_token);
+        whitelisted[msg.sender] = true; // مالک به‌طور پیش‌فرض در لیست سفید
+    }
+
+    modifier onlyWhitelisted() {
+        require(whitelisted[msg.sender], "Not whitelisted");
+        _;
+    }
+
+    function deposit(uint256 amount) external nonReentrant {
+        require(amount > 0, "Amount must be > 0");
+        token.safeTransferFrom(msg.sender, address(this), amount);
+        emit TokensDeposited(msg.sender, amount);
+    }
+
+    function withdraw(address to, uint256 amount) external onlyWhitelisted nonReentrant {
+        require(to != address(0), "Invalid address");
+        require(amount > 0, "Amount must be > 0");
+        require(token.balanceOf(address(this)) >= amount, "Insufficient balance");
+        token.safeTransfer(to, amount);
+        emit TokensWithdrawn(to, amount);
+    }
+
+    function setWhitelist(address account, bool status) external onlyOwner {
+        whitelisted[account] = status;
+        emit WhitelistUpdated(account, status);
+    }
+
+    function getBalance() external view returns (uint256) {
+        return token.balanceOf(address(this));
+    }
+}
+
+// ============================================================
+// 4️⃣ DAO ساده (رأی‌گیری با وزن توکن – هر آدرس یک رأی)
+// ============================================================
+contract SimpleDAO is Ownable {
+    IERC20 public immutable token;
+    uint256 public proposalCount;
+    uint256 public votingPeriod; // ثانیه
+
+    struct Proposal {
+        string description;
+        uint256 startTime;
+        uint256 endTime;
+        uint256 forVotes;
+        uint256 againstVotes;
+        bool executed;
+        mapping(address => bool) hasVoted;
+    }
+
+    mapping(uint256 => Proposal) public proposals;
+
+    event ProposalCreated(uint256 indexed proposalId, string description);
+    event Voted(uint256 indexed proposalId, address indexed voter, bool support);
+    event ProposalExecuted(uint256 indexed proposalId);
+
+    constructor(address _token, uint256 _votingPeriod) Ownable(msg.sender) {
+        token = IERC20(_token);
+        votingPeriod = _votingPeriod;
+    }
+
+    function createProposal(string memory description) external onlyOwner {
+        proposalCount++;
+        Proposal storage p = proposals[proposalCount];
+        p.description = description;
+        p.startTime = block.timestamp;
+        p.endTime = block.timestamp + votingPeriod;
+        emit ProposalCreated(proposalCount, description);
+    }
+
+    // هر آدرس فقط یک بار می‌تواند رأی دهد (وزن برابر)
+    function vote(uint256 proposalId, bool support) external {
+        Proposal storage p = proposals[proposalId];
+        require(block.timestamp >= p.startTime, "Voting not started");
+        require(block.timestamp <= p.endTime, "Voting ended");
+        require(!p.hasVoted[msg.sender], "Already voted");
+        require(token.balanceOf(msg.sender) > 0, "Must hold tokens to vote");
+
+        p.hasVoted[msg.sender] = true;
+        if (support) {
+            p.forVotes++;
+        } else {
+            p.againstVotes++;
+        }
+        emit Voted(proposalId, msg.sender, support);
+    }
+
+    function executeProposal(uint256 proposalId) external onlyOwner {
+        Proposal storage p = proposals[proposalId];
+        require(!p.executed, "Already executed");
+        require(block.timestamp > p.endTime, "Voting still active");
+        require(p.forVotes > p.againstVotes, "Proposal rejected");
+        p.executed = true;
+        emit ProposalExecuted(proposalId);
+    }
+
+    function getProposal(uint256 proposalId) external view returns (
+        string memory description,
+        uint256 forVotes,
+        uint256 againstVotes,
+        bool executed,
+        uint256 endTime
+    ) {
+        Proposal storage p = proposals[proposalId];
+        return (p.description, p.forVotes, p.againstVotes, p.executed, p.endTime);
+    }
+}
+
+// ============================================================
+// 5️⃣ ایردراپ با Merkle Tree (کم‌گس و امن)
+// ============================================================
+contract MerkleAirdrop is Ownable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
+    IERC20 public immutable token;
+    bytes32 public merkleRoot;
+    mapping(address => bool) public hasClaimed;
+
+    event Claimed(address indexed claimant, uint256 amount);
+    event MerkleRootUpdated(bytes32 newRoot);
+
+    constructor(address _token, bytes32 _merkleRoot) Ownable(msg.sender) {
+        token = IERC20(_token);
+        merkleRoot = _merkleRoot;
+    }
+
+    function updateMerkleRoot(bytes32 _newRoot) external onlyOwner {
+        merkleRoot = _newRoot;
+        emit MerkleRootUpdated(_newRoot);
+    }
+
+    // ادعای ایردراپ – با اثبات Merkle
+    function claim(uint256 amount, bytes32[] calldata merkleProof) external nonReentrant {
+        require(!hasClaimed[msg.sender], "Already claimed");
+        require(merkleRoot != bytes32(0), "Merkle root not set");
+
+        bytes32 leaf = keccak256(abi.encodePacked(msg.sender, amount));
+        require(MerkleProof.verify(merkleProof, merkleRoot, leaf), "Invalid proof");
+
+        hasClaimed[msg.sender] = true;
+        token.safeTransfer(msg.sender, amount);
+        emit Claimed(msg.sender, amount);
+    }
+
+    // بررسی اینکه آیا یک آدرس می‌تواند ادعا کند (بدون تغییر وضعیت)
+    function getClaimableAmount(address account, uint256 amount, bytes32[] calldata merkleProof) 
+        external view returns (bool) 
+    {
+        if (hasClaimed[account]) return false;
+        bytes32 leaf = keccak256(abi.encodePacked(account, amount));
+        return MerkleProof.verify(merkleProof, merkleRoot, leaf);
+    }
+}
+
+// ============================================================
+// 6️⃣ قرارداد یکپارچه‌ساز (Orchestrator) – استقرار همه ماژول‌ها
+// ============================================================
+contract ParadiasSupplyChain is Ownable {
+    ParadiasToken public token;
+    LinearVesting public vesting;
+    Treasury public treasury;
+    SimpleDAO public dao;
+    MerkleAirdrop public airdrop;
+
+    event ContractsDeployed(
+        address token,
+        address vesting,
+        address treasury,
+        address dao,
+        address airdrop
+    );
+
+    constructor(
+        address initialOwner,
+        uint256 vestingStartTime,
+        uint256 vestingDuration,
+        uint256 votingPeriod,
+        bytes32 airdropMerkleRoot
+    ) Ownable(initialOwner) {
+        // ۱. توکن
+        token = new ParadiasToken(initialOwner);
+
+        // ۲. وستینگ – ۵۰٪ از عرضه
+        uint256 vestingAmount = (token.MAX_SUPPLY() * 50) / 100;
+        token.approve(address(this), vestingAmount);
+        vesting = new LinearVesting(
+            address(token),
+            initialOwner,
+            vestingStartTime,
+            vestingDuration,
+            vestingAmount
+        );
+
+        // ۳. خزانه – ۳۰٪ از عرضه
+        uint256 treasuryAmount = (token.MAX_SUPPLY() * 30) / 100;
+        token.transfer(address(this), treasuryAmount);
+        treasury = new Treasury(address(token));
+        token.approve(address(treasury), treasuryAmount);
+        treasury.deposit(treasuryAmount);
+
+        // ۴. DAO – ۱۰٪ از عرضه (برای توزیع بین رأی‌دهندگان)
+        uint256 daoAmount = (token.MAX_SUPPLY() * 10) / 100;
+        dao = new SimpleDAO(address(token), votingPeriod);
+        token.transfer(address(dao), daoAmount);
+
+        // ۵. ایردراپ – ۱۰٪ باقیمانده
+        uint256 airdropAmount = (token.MAX_SUPPLY() * 10) / 100;
+        airdrop = new MerkleAirdrop(address(token), airdropMerkleRoot);
+        token.transfer(address(airdrop), airdropAmount);
+
+        emit ContractsDeployed(
+            address(token),
+            address(vesting),
+            address(treasury),
+            address(dao),
+            address(airdrop)
+        );
+    }
+
+    // نمایش مانده همه ماژول‌ها
+    function getSystemInfo() external view returns (
+        uint256 totalSupply,
+        uint256 vestingBalance,
+        uint256 treasuryBalance,
+        uint256 daoBalance,
+        uint256 airdropBalance
+    ) {
+        return (
+            token.totalSupply(),
+            token.balanceOf(address(vesting)),
+            token.balanceOf(address(treasury)),
+            token.balanceOf(address(dao)),
+            token.balanceOf(address(airdrop))
+        );
+    }
+}
